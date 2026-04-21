@@ -10,6 +10,11 @@
 !/.gitignore
 !/README.md
 !/CONTRIBUTING.md
+!/native
+!/native/jobs
+!/native/jobs/CMakeLists.txt
+!/native/jobs/src
+!/native/jobs/src/gmod_jobs.cpp
 
 
 # garrysmod directory - Only allow repo files
@@ -38,4 +43,3 @@ garrysmod/gamemodes/*
 !garrysmod/gamemodes/base
 !garrysmod/gamemodes/sandbox
 !garrysmod/gamemodes/terrortown
-
