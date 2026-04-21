@@ -1,6 +1,59 @@
 
 if ( SERVER ) then
 
+	local jobs = jobs
+	local gmod_save_async_chunks = CreateConVar( "sandbox_save_async_chunks", "0", { FCVAR_ARCHIVE, FCVAR_DONTRECORD }, "Prepare save chunks in a background jobs module before sending." )
+	local gmod_save_async_max_payload = CreateConVar( "sandbox_save_async_max_payload", "33554432", { FCVAR_ARCHIVE, FCVAR_DONTRECORD }, "Maximum payload size in bytes accepted by background save chunk jobs (default: 32 MB)." )
+
+	local function SendSaveChunks( ply, chunks, ShowSave )
+
+		local parts = #chunks
+		for i = 1, parts do
+
+			local chunk = chunks[ i ]
+			if ( !isstring( chunk ) ) then return false end
+
+			local size = string.len( chunk )
+			if ( size <= 0 || size > 65535 ) then return false end
+
+			net.Start( "GModSave" )
+				net.WriteBool( i == parts )
+				net.WriteBool( ShowSave )
+
+				net.WriteUInt( size, 16 )
+				net.WriteData( chunk, size )
+			net.Send( ply )
+
+		end
+
+		return true
+
+	end
+
+	local function SendCompressedSave( ply, compressed_save, ShowSave )
+
+		local len = string.len( compressed_save )
+		local send_size = 60000
+		local parts = math.ceil( len / send_size )
+
+		local start = 0
+		for i = 1, parts do
+			local endbyte = math.min( start + send_size, len )
+			local size = endbyte - start
+
+			net.Start( "GModSave" )
+				net.WriteBool( i == parts )
+				net.WriteBool( ShowSave )
+
+				net.WriteUInt( size, 16 )
+				net.WriteData( compressed_save:sub( start + 1, endbyte + 1 ), size )
+			net.Send( ply )
+
+			start = endbyte
+		end
+
+	end
+
 	--
 	-- Pool the shared network string
 	--
@@ -32,29 +85,40 @@ if ( SERVER ) then
 		local compressed_save = util.Compress( save )
 		if ( !compressed_save ) then compressed_save = save end
 
-		local len = string.len( compressed_save )
 		local send_size = 60000
-		local parts = math.ceil( len / send_size )
 
 		local ShowSave = false
 		if ( args[ 1 ] == "spawnmenu" ) then ShowSave = true end
 
-		local start = 0
-		for i = 1, parts do
+		if ( gmod_save_async_chunks:GetBool() && jobs && jobs.IsAvailable && jobs.IsAvailable() ) then
 
-			local endbyte = math.min( start + send_size, len )
-			local size = endbyte - start
+			local job_id, job_error = jobs.submit( "chunk_string", compressed_save, function( ok, _, _, result )
 
-			net.Start( "GModSave" )
-				net.WriteBool( i == parts )
-				net.WriteBool( ShowSave )
+				if ( !IsValid( ply ) ) then return end
 
-				net.WriteUInt( size, 16 )
-				net.WriteData( compressed_save:sub( start + 1, endbyte + 1 ), size )
-			net.Send( ply )
+				if ( !ok || !istable( result ) || !istable( result.chunks ) ) then
+					SendCompressedSave( ply, compressed_save, ShowSave )
+					return
+				end
 
-			start = endbyte
+				local sent_ok = SendSaveChunks( ply, result.chunks, ShowSave )
+				if ( !sent_ok ) then
+					SendCompressedSave( ply, compressed_save, ShowSave )
+				end
+
+			end, {
+				chunkSize = send_size,
+				maxPayloadBytes = gmod_save_async_max_payload:GetInt()
+			} )
+
+			if ( job_id ) then return end
+			if ( job_error && job_error.message ) then
+				MsgN( "gm_save async chunking failed to start: " .. tostring( job_error.message ) )
+			end
+
 		end
+
+		SendCompressedSave( ply, compressed_save, ShowSave )
 
 	end, nil, "", { FCVAR_DONTRECORD } )
 
