@@ -46,6 +46,14 @@ This repository now contains an initial scaffold for a native multithreaded jobs
 - Payload size and chunk sizes are validated; failed jobs return structured error information to callbacks.
 - Shutdown is handled via `jobs` module shutdown hook (`ShutDown` on server), which calls into native shutdown.
 
+### Safety features
+- Lua callbacks in `pump()` are wrapped in `pcall` — a single erroring callback does not prevent other results from being delivered.
+- Worker threads catch C++ exceptions (`std::exception` and `...`) and convert them into error results rather than crashing the process.
+- The native pending job queue is capped at 4096 entries; `Submit` returns an error when the queue is full.
+- `LPoll` batch-drains completed results under a single lock acquisition to reduce contention.
+- Orphan callbacks (registered but never completed within 300 seconds) are automatically cleaned up every 30 seconds and notified with a `job_timeout` error.
+- `pending()` returns the count in O(1) via a maintained counter.
+
 ### Build/install scaffold (CMake)
 - Scaffold files:
   - `native/jobs/CMakeLists.txt`

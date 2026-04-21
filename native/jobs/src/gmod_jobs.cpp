@@ -2,6 +2,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <exception>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -42,6 +43,10 @@ namespace
 	std::atomic<std::uint64_t> g_next_job_id { 1 };
 	std::atomic<bool> g_shutdown { false };
 	std::atomic<bool> g_initialized { false };
+
+	// Maximum number of jobs allowed in the pending queue.
+	// Protects against unbounded memory growth from runaway submit loops.
+	static constexpr std::size_t MAX_PENDING_JOBS = 4096;
 
 	std::size_t WorkerCount()
 	{
@@ -99,7 +104,24 @@ namespace
 				g_pending_jobs.pop();
 			}
 
-			JobResult result = ProcessJob( std::move( work ) );
+			const std::uint64_t work_id = work.id;
+			JobResult result;
+			try
+			{
+				result = ProcessJob( std::move( work ) );
+			}
+			catch ( const std::exception &e )
+			{
+				result.id = work_id;
+				result.ok = false;
+				result.error = std::string( "C++ exception: " ) + e.what();
+			}
+			catch ( ... )
+			{
+				result.id = work_id;
+				result.ok = false;
+				result.error = "unknown C++ exception";
+			}
 
 			{
 				std::lock_guard<std::mutex> lock( g_completed_mutex );
@@ -178,48 +200,55 @@ namespace
 			return 2;
 		}
 
-		const std::uint64_t job_id = g_next_job_id.fetch_add( 1 );
-
 		JobRequest request;
-		request.id = job_id;
 		request.type = job_type;
 		request.payload.assign( payload, payload_length );
 		request.chunk_size = chunk_size > 0 ? static_cast<std::size_t>( chunk_size ) : 0;
 
 		{
 			std::lock_guard<std::mutex> lock( g_pending_mutex );
+
+			if ( g_pending_jobs.size() >= MAX_PENDING_JOBS )
+			{
+				lua_pushnil( L );
+				lua_pushstring( L, "pending job queue is full" );
+				return 2;
+			}
+
+			const std::uint64_t job_id = g_next_job_id.fetch_add( 1 );
+			request.id = job_id;
 			g_pending_jobs.push( std::move( request ) );
+
+			// Unlock before notify, push id after
+			lua_pushnumber( L, static_cast<lua_Number>( job_id ) );
 		}
 		g_pending_cv.notify_one();
 
-		lua_pushnumber( L, static_cast<lua_Number>( job_id ) );
 		return 1;
 	}
 
 	int LPoll( lua_State *L )
 	{
 		const lua_Integer max_results = luaL_optinteger( L, 1, 8 );
-		const auto result_budget = max_results > 0 ? max_results : 0;
+		const auto result_budget = max_results > 0 ? static_cast<std::size_t>( max_results ) : static_cast<std::size_t>( 0 );
+
+		// Batch drain: acquire the lock once and move up to budget items out
+		std::vector<JobResult> batch;
+		{
+			std::lock_guard<std::mutex> lock( g_completed_mutex );
+			batch.reserve( std::min( result_budget, g_completed_jobs.size() ) );
+			while ( batch.size() < result_budget && !g_completed_jobs.empty() )
+			{
+				batch.push_back( std::move( g_completed_jobs.front() ) );
+				g_completed_jobs.pop();
+			}
+		}
 
 		lua_newtable( L );
 
-		for ( lua_Integer i = 1; i <= result_budget; ++i )
+		for ( std::size_t i = 0; i < batch.size(); ++i )
 		{
-			JobResult result;
-			bool has_item = false;
-
-			{
-				std::lock_guard<std::mutex> lock( g_completed_mutex );
-				if ( !g_completed_jobs.empty() )
-				{
-					result = std::move( g_completed_jobs.front() );
-					g_completed_jobs.pop();
-					has_item = true;
-				}
-			}
-
-			if ( !has_item )
-				break;
+			const JobResult &result = batch[ i ];
 
 			lua_newtable( L );
 
@@ -253,7 +282,7 @@ namespace
 				lua_setfield( L, -2, "chunks" );
 			}
 
-			lua_rawseti( L, -2, i );
+			lua_rawseti( L, -2, static_cast<lua_Integer>( i + 1 ) );
 		}
 
 		return 1;

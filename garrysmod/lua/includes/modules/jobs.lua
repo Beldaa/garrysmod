@@ -5,17 +5,23 @@ local math = math
 local ipairs = ipairs
 local pairs = pairs
 local tonumber = tonumber
+local tostring = tostring
 local isfunction = isfunction
 local isnumber = isnumber
 local isstring = isstring
 local istable = istable
+local CurTime = CurTime
+local ErrorNoHaltWithStack = ErrorNoHaltWithStack
 
 module( "jobs" )
 
 local native = nil
 local pending_callbacks = {}
+local pending_count = 0
+local pending_timestamps = {}
 
 local callback_budget = nil
+local callback_ttl_seconds = 300
 if ( SERVER ) then
 	callback_budget = CreateConVar( "sv_jobs_callback_budget", "8", { FCVAR_ARCHIVE, FCVAR_DONTRECORD }, "Maximum number of jobs callbacks to deliver each tick." )
 else
@@ -85,6 +91,8 @@ function submit( job_type, payload, callback, options )
 
 	if ( isfunction( callback ) ) then
 		pending_callbacks[ job_id ] = callback
+		pending_timestamps[ job_id ] = CurTime()
+		pending_count = pending_count + 1
 	end
 
 	return job_id
@@ -107,15 +115,20 @@ function pump( max_callbacks )
 
 		local callback = pending_callbacks[ result.id ]
 		pending_callbacks[ result.id ] = nil
+		pending_timestamps[ result.id ] = nil
 
 		if ( isfunction( callback ) ) then
+			pending_count = pending_count - 1
 			local ok = result.ok == true
 			local err = nil
 			if ( !ok ) then
 				err = MakeError( "job_failed", isstring( result.error ) && result.error || "Background job failed" )
 			end
 
-			callback( ok, result.result, err, result )
+			local call_ok, call_err = pcall( callback, ok, result.result, err, result )
+			if ( !call_ok ) then
+				ErrorNoHaltWithStack( "jobs callback error: " .. tostring( call_err ) .. "\n" )
+			end
 			delivered = delivered + 1
 		end
 
@@ -126,15 +139,35 @@ function pump( max_callbacks )
 end
 
 function pending()
-	local count = 0
-	for _ in pairs( pending_callbacks ) do
-		count = count + 1
+	return pending_count
+end
+
+local function CleanupOrphanCallbacks()
+	local now = CurTime()
+	for id, ts in pairs( pending_timestamps ) do
+		if ( now - ts > callback_ttl_seconds ) then
+			local callback = pending_callbacks[ id ]
+			pending_callbacks[ id ] = nil
+			pending_timestamps[ id ] = nil
+			pending_count = pending_count - 1
+
+			if ( isfunction( callback ) ) then
+				local err = MakeError( "job_timeout", "Job callback expired after " .. tostring( callback_ttl_seconds ) .. " seconds" )
+				local ok, call_err = pcall( callback, false, nil, err )
+				if ( !ok ) then
+					ErrorNoHaltWithStack( "jobs orphan cleanup callback error: " .. tostring( call_err ) .. "\n" )
+				end
+			end
+		end
 	end
-	return count
 end
 
 hook.Add( "Think", "jobs.Pump", function()
 	pump()
+end )
+
+timer.Create( "jobs.CleanupOrphans", 30, 0, function()
+	CleanupOrphanCallbacks()
 end )
 
 if ( SERVER ) then
