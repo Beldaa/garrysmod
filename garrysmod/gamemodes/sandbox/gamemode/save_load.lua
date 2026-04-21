@@ -3,7 +3,7 @@ if ( SERVER ) then
 
 	local jobs = jobs
 	local gmod_save_async_chunks = CreateConVar( "sandbox_save_async_chunks", "0", { FCVAR_ARCHIVE, FCVAR_DONTRECORD }, "Prepare save chunks in a background jobs module before sending." )
-	local gmod_save_async_max_payload = CreateConVar( "sandbox_save_async_max_payload", "33554432", { FCVAR_ARCHIVE, FCVAR_DONTRECORD }, "Maximum payload size in bytes accepted by background save chunk jobs." )
+	local gmod_save_async_max_payload = CreateConVar( "sandbox_save_async_max_payload", "33554432", { FCVAR_ARCHIVE, FCVAR_DONTRECORD }, "Maximum payload size in bytes accepted by background save chunk jobs (default: 32 MB)." )
 
 	local function SendSaveChunks( ply, chunks, ShowSave )
 

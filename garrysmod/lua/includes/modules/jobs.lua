@@ -125,9 +125,9 @@ function pump( max_callbacks )
 				err = MakeError( "job_failed", isstring( result.error ) && result.error || "Background job failed" )
 			end
 
-			local call_ok, call_err = pcall( callback, ok, result.result, err, result )
+			local call_ok, call_error = pcall( callback, ok, result.result, err, result )
 			if ( !call_ok ) then
-				ErrorNoHaltWithStack( "jobs callback error: " .. tostring( call_err ) .. "\n" )
+				ErrorNoHaltWithStack( "jobs callback error: " .. tostring( call_error ) .. "\n" )
 			end
 			delivered = delivered + 1
 		end
@@ -153,9 +153,9 @@ local function CleanupOrphanCallbacks()
 
 			if ( isfunction( callback ) ) then
 				local err = MakeError( "job_timeout", "Job callback expired after " .. tostring( callback_ttl_seconds ) .. " seconds" )
-				local ok, call_err = pcall( callback, false, nil, err )
-				if ( !ok ) then
-					ErrorNoHaltWithStack( "jobs orphan cleanup callback error: " .. tostring( call_err ) .. "\n" )
+				local call_ok, call_error = pcall( callback, false, nil, err )
+				if ( !call_ok ) then
+					ErrorNoHaltWithStack( "jobs orphan cleanup callback error: " .. tostring( call_error ) .. "\n" )
 				end
 			end
 		end
